@@ -1,0 +1,17 @@
+{
+  "product": {
+    "name": "my-app",
+    "current_version": "1.0.0"
+  },
+  "source": {
+    "type": "github-tag",
+    "github": {
+      "owner": "acme",
+      "repo": "my-app",
+      "api_base_url": "https://github.internal.example.com/api/v3",
+      "username_env": "GHE_USERNAME",
+      "token_env": "GHE_PASSWORD",
+      "use_releases": true
+    }
+  }
+}

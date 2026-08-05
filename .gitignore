@@ -1,0 +1,10 @@
+# 构建产物
+bin/
+dist/
+
+# Go
+*.test
+*.out
+
+# 示例产物
+*.bin

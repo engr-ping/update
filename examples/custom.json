@@ -1,0 +1,15 @@
+{
+  "product": {
+    "name": "my-app",
+    "current_version": "1.0.0"
+  },
+  "source": {
+    "type": "custom",
+    "custom": {
+      "versions_url": "https://updates.example.com/feed.json",
+      "headers": { "X-Client": "my-app" },
+      "auth": { "type": "bearer", "token_env": "UPDATE_TOKEN" },
+      "download_url_template": "https://updates.example.com/files/{version}/{asset}"
+    }
+  }
+}

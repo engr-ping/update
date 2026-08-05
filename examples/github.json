@@ -1,0 +1,15 @@
+{
+  "product": {
+    "name": "my-app",
+    "current_version": "1.0.0"
+  },
+  "source": {
+    "type": "github-tag",
+    "github": {
+      "owner": "acme",
+      "repo": "my-app",
+      "token_env": "GITHUB_TOKEN",
+      "use_releases": true
+    }
+  }
+}
