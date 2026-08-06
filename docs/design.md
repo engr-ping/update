@@ -198,36 +198,88 @@
 - **平台匹配**：默认 `runtime.GOOS/GOARCH`；候选产物按「文件名包含 os + arch」或 `asset_filter` 正则匹配；`all` 返回全部。
 - 匹配优先级：`{os}-{arch}` → `{os}` → 无平台标识（视为通用）。
 
-## 8. 安全
+## 8. 分发服务器（updateserver）
+
+配套的只读分发服务器，把产物目录发布为 §6 格式的 feed，客户端 `custom` 源可直接消费。
+
+### 8.1 数据目录布局
+
+```
+package/<name>/<version>/<file>
+package/<name>/<version>/meta.json   # 可选
+```
+
+- `<name>` / `<version>` 均为目录名；`<version>` 目录不可变（不提供删除/覆盖接口）。
+- 版本目录按 semver 降序排列（复用 `internal/version` 的比较逻辑），非 SemVer 目录按字典序降序。
+- 每个版本目录可选 `meta.json` 覆盖默认元数据：`name` / `notes` / `published_at` / `checksum` / `assets.{name}.{sha256,size}`。
+- 默认 `published_at` 回退为版本目录的修改时间（UTC RFC3339）。
+
+### 8.2 端点
+
+| 端点 | 行为 |
+| --- | --- |
+| `GET /feed/<name>.json` | 该软件的发布清单数组（§6 结构，新版本在前）；无此产品 → 404；名称含路径穿越 → 400 |
+| `GET /feeds.json` | `{"feeds":[{"name","latest_version","versions"}]}` |
+| `GET /package/<name>/<version>/<file>` | 产物下载；路径穿越/不存在 → 404 |
+| `GET /healthz` | `{"status":"ok"}` |
+
+- feed 中每个产物的 `url` 按请求的 scheme/host 自动生成，支持反代 `X-Forwarded-Proto: https`，客户端无需 `download_url_template`。
+- 下载做防御性校验：`filepath.EvalSymlinks` 解析后必须落在 `<dir>/package/<name>` 之下，防止符号链接逃逸。
+- 认证：下载匿名；如需鉴权建议在前置反代（nginx/caddy）完成，服务器保持无状态。
+- 目录扫描（`ReadDir`）在每次请求时执行，无缓存，保证新版本即时可见。
+
+### 8.3 使用
+
+```sh
+./bin/updateserver -addr :8080 -dir ./package
+```
+
+客户端配置：
+
+```json
+{
+  "product": {"name": "my-app", "current_version": "1.0.0"},
+  "source": {"type": "custom", "custom": {"versions_url": "https://updates.example.com/feed/my-app.json"}}
+}
+```
+
+部署（systemd / 反代 / 鉴权 / 发布流程）见 `docs/deployment.md`。
+
+## 9. 安全
 
 - token/密码只经环境变量注入，**永不写入仓库、不出现在任何输出/错误信息中**。
 - 传输默认 HTTPS；HTTP 仅当显式配置允许且打警告到 stderr。
 - 提供整体或逐文件 `sha256` 校验，校验失败 → 退出码 4。
 - 下载到临时文件后原子重命名，避免半成品。
 
-## 9. 目录结构
+## 10. 目录结构
 
 ```
 update/
 ├── go.mod
-├── Makefile                # build / test / lint / 三平台交叉编译
+├── Makefile                # build / test / vet / 三平台交叉编译
 ├── .gitignore
-├── README.md               # 集成示例（Shell/C/Python/Go）
+├── README.md               # 集成示例 + 分发服务器用法
 ├── cmd/
 │   └── update/
 │       └── main.go
+├── server/                 # 分发服务器（updateserver）
+│   ├── main.go             # 入口与路由
+│   ├── server.go           # feed 生成、下载、目录防护
+│   └── server_test.go
 ├── internal/
 │   ├── config/             # 配置加载/校验/默认值
 │   ├── version/            # semver 比较、标签解析、平台匹配
 │   ├── source/             # Source 接口 + github/custom 实现
 │   ├── transport/          # HTTP 客户端（认证/头/TLS/代理/超时/错误归一化）
 │   ├── cli/                # 子命令、JSON 输出、退出码
-│   └── version/            # 自身版本信息
+│   └── versioninfo/        # 自身版本信息
 └── docs/
-    └── design.md           # 本文档
+    ├── design.md           # 本文档
+    └── integration.md      # 宿主集成指南
 ```
 
-## 10. 实现计划
+## 11. 实现计划
 
 ### Phase 1 — 脚手架（可运行空 CLI）
 - `go mod init`、`cmd/update/main.go`（子命令骨架）、Makefile（含 `build`/`test`/`vet`/交叉编译 `dist`）、`.gitignore`。
@@ -256,10 +308,12 @@ update/
 - C ABI `c-shared` 共享库（进程内嵌入）。
 - 增量更新、GPG/签名校验、UI 托管组件。
 
-## 11. 已决策清单
+## 12. 已决策清单
 
 - 语言：**Go**；形态：**单静态 CLI 可执行文件**（子进程调用）。
 - 宿主触发：启动时单次同步检查；`check` 快速返回。
 - v1 范围：`check` + `download` + `list` + `version`，GitHub/release 与自定义源，认证 GitHub。
 - DLL/C ABI：留口子，v1 不实现；核心与 CLI 解耦便于后补。
 - 下载进度：v1 默认下载完成才返回（宿主异步等待进程结束即可）。
+- 分发服务器：只读静态分发（无上传 API），匿名下载，feed 与 §6 统一发布清单完全一致；鉴权交给前置反代。
+- 服务器元数据：每个版本目录可选 `meta.json`，缺失字段回退文件系统默认值。

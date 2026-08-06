@@ -44,6 +44,8 @@
 - `examples/github-enterprise.json` — 内部 GitHub Enterprise（用户名+密码 Basic 认证）
 - `examples/custom.json` — 自定义源（统一发布清单 + bearer/basic 认证 + 自定义头）
 
+自己部署分发服务器时，直接用 `updateserver`（见 README「分发服务器」），客户端 `versions_url` 指向其 `/feed/<name>.json` 即可，无需手写 feed。
+
 注意：**token 值绝不写在配置文件里**，配置只写环境变量名（`token_env` / `username_env` 字段），运行时从环境读取。
 
 ### 内部 GitHub（需要用户名密码）

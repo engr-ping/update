@@ -1,0 +1,12 @@
+{
+  "product": {
+    "name": "my-app",
+    "current_version": "1.0.0"
+  },
+  "source": {
+    "type": "custom",
+    "custom": {
+      "versions_url": "http://updates.example.com/feed/my-app.json"
+    }
+  }
+}

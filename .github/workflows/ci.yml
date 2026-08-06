@@ -24,7 +24,9 @@ jobs:
       - name: go test
         run: go test -count=1 ./...
       - name: build
-        run: CGO_ENABLED=0 go build -trimpath -o bin/update ./cmd/update
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o bin/update ./cmd/update
+          CGO_ENABLED=0 go build -trimpath -o bin/updateserver ./server
 
   dist:
     name: cross-compile
@@ -50,8 +52,13 @@ jobs:
             go build -trimpath \
             -ldflags "-s -w -X update/internal/versioninfo.Version=${VERSION}" \
             -o update-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} ./cmd/update
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+            go build -trimpath \
+            -o updateserver-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} ./server
       - uses: actions/upload-artifact@v4
         with:
           name: update-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: update-*
+          path: |
+            update-*
+            updateserver-*
           if-no-files-found: error

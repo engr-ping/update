@@ -10,10 +10,12 @@
 ## 构建
 
 ```sh
-make build     # 当前平台二进制 -> bin/update
-make test      # 全部测试
-make vet       # go vet
-make dist      # 三平台 6 种产物 -> dist/
+make build        # 当前平台客户端二进制 -> bin/update
+make server       # 分发服务器 -> bin/updateserver
+make test         # 全部测试
+make vet          # go vet
+make dist         # 客户端三平台 6 种产物 -> dist/
+make dist-server  # 服务器三平台 6 种产物 -> dist/
 ```
 
 ## 使用
@@ -105,6 +107,49 @@ stdout 只输出协议 JSON，日志/错误走 stderr。退出码：`0` 成功�
 
 `auth` 支持 `bearer` 或 `basic`；`download_url_template` 支持 `{version}` / `{asset}` 占位符，资产缺少 `url` 时自动填充。
 
+## 分发服务器
+
+配套的 `updateserver` 把产物目录发布为 feed，客户端 `custom` 源可直接对接，开箱即用：
+
+```sh
+# 目录布局：package/<软件名>/<版本号>/<产物文件>，可选 <版本号>/meta.json
+./bin/updateserver -addr :8080 -dir ./package
+```
+
+端点：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /feed/<name>.json` | 某软件的发布清单（数组，新版本在前），格式与上面的自定义源完全一致 |
+| `GET /feeds.json` | 全部软件与其版本列表 |
+| `GET /package/<name>/<version>/<file>` | 产物下载（已做路径穿越防护，只读） |
+| `GET /healthz` | 健康检查 |
+
+客户端配置指向服务器即可：
+
+```json
+{
+  "product": { "name": "my-app", "current_version": "1.0.0" },
+  "source": { "type": "custom", "custom": { "versions_url": "http://updates.example.com/feed/my-app.json" } }
+}
+```
+
+可选 `meta.json`（增强元数据，缺省时 `published_at` 回退为目录修改时间）：
+
+```json
+{
+  "name": "My App",
+  "notes": "修复了 X",
+  "published_at": "2024-02-01T00:00:00Z",
+  "checksum": "overall-checksum",
+  "assets": { "app-linux-amd64.tar.gz": { "sha256": "abc123...", "size": 12345 } }
+}
+```
+
+feed 中每个产物的 `url` 由服务器按请求的 scheme/host 自动生成（支持反代 `X-Forwarded-Proto`），客户端无需 `download_url_template`。仅支持静态文件分发（版本目录不可变、不提供删除接口）。
+
+**部署与发布流程见 [`docs/deployment.md`](docs/deployment.md)**（systemd、nginx 反代 + HTTPS、鉴权、发布 checklist、FAQ）。
+
 ## 输出协议
 
 `check` 输出：
@@ -133,7 +178,7 @@ stdout 只输出协议 JSON，日志/错误走 stderr。退出码：`0` 成功�
 
 ## 宿主集成
 
-完整集成指南见 **`docs/integration.md`**（分发、协议、C/C++/Python/Go/Shell 示例、推荐流程、FAQ）。
+完整集成指南见 **`docs/integration.md`**（分发、协议、C/C++/Python/Go/Shell 示例、推荐流程、FAQ）；服务器部署见 **`docs/deployment.md`**。
 
 核心三步：分发对应平台的静态二进制 → 准备 `config.json`（token 走环境变量）→ 子进程调用并解析 stdout JSON：
 
@@ -160,6 +205,7 @@ make test
 
 ```
 cmd/update/       CLI 入口
+server/           分发服务器（只读静态分发 + feed 生成）
 internal/cli/     子命令、JSON 输出、退出码
 internal/config/  配置加载与校验
 internal/source/  源抽象：GitHub / custom
