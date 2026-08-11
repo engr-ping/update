@@ -3,19 +3,21 @@
 一个语言无关的软件更新模块：宿主应用（任意语言、Windows/Linux/macOS）通过子进程调用 `update` 检查新版本并下载产物。
 
 - **语言无关**：CLI 子进程调用 + stdout JSON，任何语言零 ABI 耦合。
-- **零第三方依赖**：纯 Go stdlib 实现，产物是静态二进制。
+- **零第三方依赖**：纯 Rust stdlib 为主，仅 7 个精选 crates（ureq/rustls/serde/serde_json/sha2/base64/regex），产物是静态二进制。
 - **多源**：GitHub tag/release（含认证、GitHub Enterprise）与自定义 HTTP 源。
 - **安全**：token 只从环境变量注入；下载带 sha256 校验；原子写盘。
 
 ## 构建
 
 ```sh
-make build        # 当前平台客户端二进制 -> bin/update
+make build        # 当前平台客户端二进制 -> bin/update（cargo build --release）
 make server       # 分发服务器 -> bin/updateserver
-make test         # 全部测试
-make vet          # go vet
+make test         # 全部测试（cargo test --workspace）
+make vet          # cargo clippy 静态检查（--all-targets -D warnings）
+make fmt          # cargo fmt --check（未装 rustfmt 时提示跳过）
 make dist         # 客户端三平台 6 种产物 -> dist/
 make dist-server  # 服务器三平台 6 种产物 -> dist/
+make lib          # 当前平台 C ABI 共享库 -> dist/libupdate.{so,dylib,dll} + dist/libupdate.h
 ```
 
 ## 使用
@@ -195,7 +197,7 @@ C/C++、Go、Shell 示例与启动时检查推荐流程见集成指南。
 
 ## 测试
 
-所有测试基于 `net/http/httptest` 模拟源，不需要真实网络：
+所有测试基于 update-core 内置的 TestServer（真实 HTTP 监听）模拟源，不需要真实网络：
 
 ```sh
 make test
@@ -204,13 +206,10 @@ make test
 ## 目录结构
 
 ```
-cmd/update/       CLI 入口
-server/           分发服务器（只读静态分发 + feed 生成）
-internal/cli/     子命令、JSON 输出、退出码
-internal/config/  配置加载与校验
-internal/source/  源抽象：GitHub / custom
-internal/transport/ HTTP 客户端
-internal/version/ semver 比较、平台匹配
-internal/versioninfo/ 构建期版本注入
-docs/design.md    完整设计文档
+crates/update-core/ 全部核心逻辑（cli 子命令/JSON 输出/退出码、config、
+                     source github/custom、transport、semver、httpd、server）
+crates/update-cli/   CLI 外壳入口（bin/update）
+crates/update-server/ 分发服务器外壳（bin/updateserver）
+crates/update-lib/   C ABI 共享库（libupdate.{so,dylib,dll} + libupdate.h）
+docs/design.md       完整设计文档
 ```

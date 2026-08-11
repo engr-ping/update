@@ -1,0 +1,14 @@
+[package]
+name = "update-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "update C ABI 共享库（DLL/so/dylib）"
+
+[lib]
+name = "libupdate"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+update = { package = "update-core", path = "../update-core" }

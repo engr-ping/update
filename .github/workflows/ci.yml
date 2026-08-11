@@ -10,55 +10,71 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: vet + test
+  check:
+    name: clippy + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: "1.22.x"
-          cache: true
-      - name: go vet
-        run: go vet ./...
-      - name: go test
-        run: go test -count=1 ./...
-      - name: build
-        run: |
-          CGO_ENABLED=0 go build -trimpath -o bin/update ./cmd/update
-          CGO_ENABLED=0 go build -trimpath -o bin/updateserver ./server
+          components: clippy
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
 
   dist:
     name: cross-compile
-    needs: test
-    runs-on: ubuntu-latest
+    needs: check
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, windows, darwin]
-        goarch: [amd64, arm64]
+        include:
+          - os: ubuntu-latest
+            targets: ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+            prefix: linux
+          - os: windows-latest
+            targets: ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+            prefix: windows
+          - os: macos-latest
+            targets: ["x86_64-apple-darwin", "aarch64-apple-darwin"]
+            prefix: darwin
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: "1.22.x"
-          cache: true
-      - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+          targets: ${{ join(matrix.targets, ' ') }}
+      - name: Install aarch64 linker
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          EXT=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-            go build -trimpath \
-            -ldflags "-s -w -X update/internal/versioninfo.Version=${VERSION}" \
-            -o update-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} ./cmd/update
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-            go build -trimpath \
-            -o updateserver-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} ./server
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build ${{ matrix.prefix }} (update + updateserver)
+        shell: bash
+        run: |
+          VERSION="$(git describe --tags --always 2>/dev/null || echo 1.0.0)"
+          COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            case "$target" in
+              x86_64-*)      arch=amd64 ;;
+              aarch64-*)     arch=arm64 ;;
+            esac
+            ext=""
+            if [[ "$target" == *-windows-* ]]; then ext=".exe"; fi
+            if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+              export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            fi
+            export UPDATE_VERSION="$VERSION" UPDATE_COMMIT="$COMMIT"
+            cargo build --release --target "$target" -p update-cli
+            mkdir -p dist
+            cp "target/$target/release/update" "dist/update-$VERSION-${{ matrix.prefix }}-$arch$ext"
+            cargo build --release --target "$target" -p update-server
+            cp "target/$target/release/updateserver" "dist/updateserver-$VERSION-${{ matrix.prefix }}-$arch$ext"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: update-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            update-*
-            updateserver-*
+          name: update-dist-${{ matrix.prefix }}
+          path: dist/
           if-no-files-found: error

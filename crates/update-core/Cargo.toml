@@ -1,0 +1,20 @@
+[package]
+name = "update-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "update 通用软件更新模块核心逻辑（零异步运行时，仅 7 个精选 crates）"
+build = "build.rs"
+
+[lib]
+name = "update"
+path = "src/lib.rs"
+
+[dependencies]
+ureq = { version = "2.12", default-features = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+regex = "1"

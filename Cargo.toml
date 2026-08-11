@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/update-core",
+    "crates/update-cli",
+    "crates/update-server",
+    "crates/update-lib",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -13,7 +13,7 @@
 - 宿主集成方式：**启动时单次同步检查**（CLI 进程短生命周期，一次调用即返回）
 
 **范围外（v1 不实现）**
-- 宿主进程内嵌（C ABI，后续单独引入）
+- 宿主进程内嵌（C ABI）——已由 `update-lib`（crates/update-lib）提供，见 README「宿主集成」
 - 自动安装/替换文件、服务自更新
 - 增量/差分更新、签名校验（仅 checksum）
 
@@ -21,13 +21,13 @@
 
 | 决策点 | 选择 | 理由 |
 |---|---|---|
-| 语言 | **Go**（已定） | stdlib 自带 HTTP/TLS；GitHub 认证零第三方依赖；三平台交叉编译一条命令；产物是零依赖静态二进制 |
+| 语言 | **Rust**（cargo workspace） | ureq/rustls 提供 HTTP/TLS；7 个精选 crates 之外零依赖；三平台交叉编译一条命令；产物是零依赖静态二进制 |
 | 形态 | **单静态 CLI 可执行文件**（已定） | 宿主通过子进程调用，任何语言都能集成；Go 侧靠接口形态实现语言无关，不依赖语言本身 |
 | 宿主⇄CLI 协议 | **命令行参数入 + stdout JSON 出 + 退出码** | 通用、无共享内存/无 ABI 耦合，跨语言最简单 |
 | 日志 | 一律走 **stderr** | 保证 stdout 只含协议 JSON，宿主可放心解析 |
 | 版本比较 | **SemVer 2.0**，可退化为字典序 | GitHub tag 常见 `v1.2.3`，需要剥 `v` 前缀 |
 | 宿主触发 | **启动时单次同步检查** | 用户确认的主要场景；CLI 设计为快速返回，宿主可阻塞也可异步拉起 |
-| C ABI / DLL | **留口子，v1 不做** | 用户确认非硬需求；核心逻辑与 CLI 外壳解耦，后期以 `c-shared` 加一层壳即可 |
+| C ABI / DLL | **update-lib 已提供**（v1 内实现） | 核心逻辑在 update-core，`update-lib`（cdylib）以 `run_to_buffers` 暴露，宿主可进程内调用 |
 
 **备选方案（已评估）**
 - Rust：静态二进制 + cdylib 都支持，但维护成本更高 → 备选。
@@ -41,7 +41,7 @@
 └────────────┬───────────────┘
              │ 子进程调用
 ┌────────────▼───────────────┐
-│  update CLI（Go 静态二进制）  │
+│  update CLI（Rust 静态二进制）  │
 │  ┌───────────────────────┐  │
 │  │ 子命令分发 check/download│  │
 │  └───────────────────────┘  │
@@ -183,7 +183,7 @@
 }
 ```
 
-- 源接口（Go 内部）：
+- 源接口（Rust trait，crates/update-core）：
   ```go
   type Source interface {
       Latest(ctx context.Context) (*Release, error) // 最新发布
@@ -194,7 +194,7 @@
 
 ## 7. 版本与平台匹配
 
-- **版本比较**：SemVer 2.0（`golang.org/x/mod/semver`，stdlib 生态），自动剥 `v`/`release-` 前缀；非 SemVer 标签按字典序降序取最新。
+- **版本比较**：SemVer 2.0（手写实现，`crates/update-core/src/semver.rs`），自动剥 `v`/`release-` 前缀；非 SemVer 标签按字典序降序取最新。
 - **平台匹配**：默认 `runtime.GOOS/GOARCH`；候选产物按「文件名包含 os + arch」或 `asset_filter` 正则匹配；`all` 返回全部。
 - 匹配优先级：`{os}-{arch}` → `{os}` → 无平台标识（视为通用）。
 
@@ -210,7 +210,7 @@ package/<name>/<version>/meta.json   # 可选
 ```
 
 - `<name>` / `<version>` 均为目录名；`<version>` 目录不可变（不提供删除/覆盖接口）。
-- 版本目录按 semver 降序排列（复用 `internal/version` 的比较逻辑），非 SemVer 目录按字典序降序。
+- 版本目录按 semver 降序排列（复用 `crates/update-core` 的 semver 比较逻辑），非 SemVer 目录按字典序降序。
 - 每个版本目录可选 `meta.json` 覆盖默认元数据：`name` / `notes` / `published_at` / `checksum` / `assets.{name}.{sha256,size}`。
 - 默认 `published_at` 回退为版本目录的修改时间（UTC RFC3339）。
 
@@ -224,9 +224,9 @@ package/<name>/<version>/meta.json   # 可选
 | `GET /healthz` | `{"status":"ok"}` |
 
 - feed 中每个产物的 `url` 按请求的 scheme/host 自动生成，支持反代 `X-Forwarded-Proto: https`，客户端无需 `download_url_template`。
-- 下载做防御性校验：`filepath.EvalSymlinks` 解析后必须落在 `<dir>/package/<name>` 之下，防止符号链接逃逸。
+- 下载做防御性校验：`std::fs::canonicalize` 解析后必须落在 `<dir>/package/<name>` 之下，防止符号链接逃逸。
 - 认证：下载匿名；如需鉴权建议在前置反代（nginx/caddy）完成，服务器保持无状态。
-- 目录扫描（`ReadDir`）在每次请求时执行，无缓存，保证新版本即时可见。
+- 目录扫描（`std::fs::read_dir`）在每次请求时执行，无缓存，保证新版本即时可见。
 
 ### 8.3 使用
 
@@ -256,24 +256,16 @@ package/<name>/<version>/meta.json   # 可选
 
 ```
 update/
-├── go.mod
-├── Makefile                # build / test / vet / 三平台交叉编译
+├── Cargo.toml              # workspace：7 个精选 crates + 三成员
+├── Makefile                # build / test / vet / fmt / 三平台交叉编译 / lib
 ├── .gitignore
 ├── README.md               # 集成示例 + 分发服务器用法
-├── cmd/
-│   └── update/
-│       └── main.go
-├── server/                 # 分发服务器（updateserver）
-│   ├── main.go             # 入口与路由
-│   ├── server.go           # feed 生成、下载、目录防护
-│   └── server_test.go
-├── internal/
-│   ├── config/             # 配置加载/校验/默认值
-│   ├── version/            # semver 比较、标签解析、平台匹配
-│   ├── source/             # Source 接口 + github/custom 实现
-│   ├── transport/          # HTTP 客户端（认证/头/TLS/代理/超时/错误归一化）
-│   ├── cli/                # 子命令、JSON 输出、退出码
-│   └── versioninfo/        # 自身版本信息
+├── crates/
+│   ├── update-core/        # 全部核心逻辑：cli / config / custom / github / httpd / match
+│   │   └── src/            #   / semver / server / transport / versioninfo / testutil
+│   ├── update-cli/         # 客户端外壳（子进程入口）
+│   ├── update-server/      # 分发服务器外壳（updateserver）
+│   └── update-lib/         # C ABI 共享库 + include/libupdate.h
 └── docs/
     ├── design.md           # 本文档
     └── integration.md      # 宿主集成指南
@@ -282,7 +274,7 @@ update/
 ## 11. 实现计划
 
 ### Phase 1 — 脚手架（可运行空 CLI）
-- `go mod init`、`cmd/update/main.go`（子命令骨架）、Makefile（含 `build`/`test`/`vet`/交叉编译 `dist`）、`.gitignore`。
+- `cargo new` workspace、`crates/update-cli`（子命令骨架）、Makefile（含 `build`/`test`/`vet`/交叉编译 `dist`）、`.gitignore`。
 - 验收：三平台交叉编译出二进制，`update version` 正常。
 
 ### Phase 2 — 配置与版本
@@ -294,7 +286,7 @@ update/
 - `Source` 接口 + GitHub 实现（releases/tags，Enterprise base url，认证）。
 - 自定义源实现（统一发布清单 + 模板下载 URL）。
 - `transport` 包：超时、TLS、代理、认证头、错误归一化。
-- 验收：用 `net/http/httptest` 模拟 GitHub API 与自定义源，跑通端到端。
+- 验收：用 update-core 内置的 TestServer（真实 HTTP 监听）模拟 GitHub API 与自定义源，跑通端到端。
 
 ### Phase 4 — CLI 命令
 - `check` / `download` / `list` / `version`，JSON 输出 + 退出码，日志走 stderr。
@@ -304,8 +296,7 @@ update/
 - 下载校验和、原子写盘；README 集成示例（C/Python/Go/Shell）。
 - 验收：`make test` 全绿，`make dist` 产出 win/linux/mac 三平台产物。
 
-### Phase 6 — 后续扩展（不做进 v1）
-- C ABI `c-shared` 共享库（进程内嵌入）。
+### Phase 6 — 后续扩展（v1 已交付 C ABI，其余不做进 v1）
 - 增量更新、GPG/签名校验、UI 托管组件。
 
 ## 12. 已决策清单

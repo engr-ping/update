@@ -1,0 +1,13 @@
+[package]
+name = "update-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "update 客户端 CLI"
+
+[[bin]]
+name = "update"
+path = "src/main.rs"
+
+[dependencies]
+update = { package = "update-core", path = "../update-core" }
