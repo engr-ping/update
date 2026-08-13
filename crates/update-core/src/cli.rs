@@ -49,6 +49,7 @@ fn run_impl(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     };
     match cmd.as_str() {
         "check" => cmd_check(&args[2..], out, err),
+        "autoupdate" => cmd_autoupdate(&args[2..], out, err),
         "download" => cmd_download(&args[2..], out, err),
         "list" => cmd_list(&args[2..], out, err),
         "version" => match writeln!(out, "{}", VERSION) {
@@ -314,6 +315,69 @@ fn cmd_check(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     EXIT_OK
 }
 
+fn cmd_autoupdate(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    if wants_help(args) {
+        let _ = write!(out, "{}", autoupdate_usage());
+        return EXIT_OK;
+    }
+    let flags = match parse_flags(
+        args,
+        &[
+            "config",
+            "interval",
+            "out",
+            "watch-pid",
+            "on-update",
+            "current-version",
+            "platform",
+            "username",
+            "password",
+        ],
+        &["once"],
+    ) {
+        Ok(f) => f,
+        Err(e) => return usage_fail(&e, err),
+    };
+    let config_path = match flags.get("config") {
+        Some(c) => c.to_string(),
+        None => {
+            return config_fail(
+                "autoupdate requires --config FILE (or set UPDATE_CONFIG)",
+                err,
+            )
+        }
+    };
+    let interval_secs = flags
+        .get("interval")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(86400);
+    let out_dir = flags
+        .get("out")
+        .map(str::to_string)
+        .unwrap_or_else(crate::autoupdate::default_out_dir);
+    let watch_pid = flags.get("watch-pid").and_then(|s| s.parse::<u32>().ok());
+    let on_update = flags.get("on-update").map(str::to_string);
+    let once = flags.flag.contains("once");
+    let current_version = flags.get("current-version").map(str::to_string);
+    let platform = flags.get("platform").map(str::to_string);
+    let username = flags.get("username").map(str::to_string);
+    let password = flags.get("password").map(str::to_string);
+
+    let opts = crate::autoupdate::AutoOptions {
+        config_path,
+        interval_secs,
+        out_dir,
+        watch_pid,
+        on_update,
+        once,
+        current_version,
+        platform,
+        username,
+        password,
+    };
+    crate::autoupdate::run_autoupdate(&opts, err)
+}
+
 #[derive(Serialize)]
 struct DownloadOutput {
     schema: i64,
@@ -573,10 +637,28 @@ stdout 输出协议 JSON：schema / version / file。
 "
 }
 
+fn autoupdate_usage() -> &'static str {
+    "update autoupdate — 后台自动检查并下载更新
+
+用法: update autoupdate [选项]
+  --config FILE          配置文件（必填，或设置 $UPDATE_CONFIG）
+  --interval N           两次检查的间隔秒数，默认 86400（1 天）
+  --out DIR              下载目录，默认系统临时目录（按进程隔离）
+  --watch-pid PID        监测宿主进程；宿主退出且有就绪更新时执行 --on-update
+  --on-update CMD        宿主退出后执行的 shell 命令，支持 {file} {version} 占位符
+  --once                 仅检查并下载一次即退出（不进入循环）
+  --current-version X    覆盖配置里的当前版本
+  --platform os/arch     目标平台（默认宿主；\"all\" 不过滤资产）
+  --username USER        认证用户名（触发 Basic 认证）
+  --password PASS        密码（无 --username 时视为 Bearer token）
+
+典型用法（独立进程，不影响宿主）：
+  update autoupdate --config x.json --watch-pid $PPID --on-update 'mv {file} /opt/app && /opt/app'
+"
+}
+
 fn list_usage() -> &'static str {
     "update list — 列出可用版本
-
-用法: update list [选项]
   --config FILE          配置文件（缺省取 $UPDATE_CONFIG）
   --limit N              最多列出几个版本，默认 10
   --platform os/arch     目标平台（默认宿主；\"all\" 不过滤资产）
@@ -945,5 +1027,112 @@ mod tests {
         let assets = v["release"]["assets"].as_array().unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0]["name"], "app-full.bin");
+    }
+
+    #[test]
+    fn test_autoupdate_once_downloads() {
+        let (_srv, cfg) = feed_server();
+        let dl = out_dir("autodl_once");
+        let args = [
+            "update",
+            "autoupdate",
+            "--config",
+            &cfg,
+            "--once",
+            "--out",
+            &dl,
+        ]
+        .map(str::to_string);
+        let (code, _, err) = run_args(&args);
+        assert_eq!(code, EXIT_OK, "err: {err}");
+        let f = std::path::Path::new(&dl).join("app-linux-amd64.tar.gz");
+        assert!(f.exists(), "expected downloaded file in {dl}");
+        let content = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(content, "hello app-linux-amd64.tar.gz");
+    }
+
+    #[test]
+    fn test_autoupdate_once_no_update_skips_download() {
+        // current_version 已是 2.0.0，无更新 → 不应下载任何东西。
+        let srv = TestServer::new(move |req| {
+            if let Some(name) = req.path.strip_prefix("/dl/") {
+                return text_response(200, &format!("hello {name}"));
+            }
+            if req.path == "/feed.json" {
+                return json_response(
+                    200,
+                    &format!(
+                        r#"[{{"version":"2.0.0","assets":[{{"name":"app-linux-amd64.tar.gz","url":"http://{0}/dl/app-linux-amd64.tar.gz","size":10}}]}}]"#,
+                        req.host()
+                    ),
+                );
+            }
+            crate::testutil::text_response(404, "not found")
+        });
+        let cfg = write_temp(
+            "cfg_no-up",
+            "config.json",
+            &format!(
+                r#"{{"product":{{"name":"my-app","current_version":"2.0.0"}},"source":{{"type":"custom","custom":{{"versions_url":"{}/feed.json"}}}}}}"#,
+                srv.url
+            ),
+        );
+        let dl = out_dir("autodl_noup");
+        let args = [
+            "update",
+            "autoupdate",
+            "--config",
+            &cfg,
+            "--once",
+            "--out",
+            &dl,
+        ]
+        .map(str::to_string);
+        let (code, _, err) = run_args(&args);
+        assert_eq!(code, EXIT_OK, "err: {err}");
+        let entries = std::fs::read_dir(&dl).unwrap().count();
+        assert_eq!(entries, 0, "should not download when no update");
+    }
+
+    #[test]
+    fn test_autoupdate_watch_pid_applies_on_exit() {
+        // 用一个真实子进程作为「宿主」：autoupdate 在独立线程里 watch 它，
+        // 宿主被 kill 并回收后，autoupdate 感知其退出并执行 on-update（写标记文件）。
+        let (_srv, cfg) = feed_server();
+        let dl = out_dir("autodl_watch");
+        let marker = dl.trim_end_matches('/').to_string() + "/applied.txt";
+        let mut host = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn host");
+        let pid = host.id();
+        let on_update = format!("echo applied 2.0.0 > '{}'", marker);
+        let args = [
+            "update",
+            "autoupdate",
+            "--config",
+            &cfg,
+            "--watch-pid",
+            &pid.to_string(),
+            "--on-update",
+            &on_update,
+            "--out",
+            &dl,
+        ]
+        .map(str::to_string);
+        let handle = std::thread::spawn(move || run_args(&args));
+        // 让 autoupdate 先完成首次检查+下载，再杀掉宿主。
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = host.kill();
+        let _ = host.wait();
+        let (code, _, err) = handle.join().expect("autoupdate thread");
+        assert_eq!(code, EXIT_OK, "err: {err}");
+        // 宿主已退出，on-update 应已执行。
+        assert!(
+            std::path::Path::new(&marker).exists(),
+            "on-update should run after host exits"
+        );
+        let content = std::fs::read_to_string(&marker).unwrap();
+        assert!(content.contains("applied 2.0.0"), "got: {content}");
     }
 }

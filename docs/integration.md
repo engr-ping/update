@@ -259,12 +259,30 @@ fi
   │                         替换/重启由宿主自己完成（update 不做安装）
   │
   └─ 启动完成
+ ```
+
+ 要点：
+ - **下载不阻塞启动**：check 快速返回（一次 HTTP），download 可异步做。
+ - **安装由宿主负责**：`update` 只保证文件完整下载（sha256 校验 + 原子写盘），替换、备份、重启流程由宿主实现（v1 范围，见 `docs/design.md`）。
+ - **并发安全**：同一时刻只跑一个 `update` 实例；下载到临时目录可避免与正在运行的应用文件冲突。
+
+## 6.1 后台常驻自动更新（autoupdate）
+
+若希望「宿主启动后自动检查、有更新自动下载、宿主退出后自动应用、不退出则每天检查一次、空闲挂起、独立运行不影响宿主」，使用 `update autoupdate` 子命令（或 C ABI 的 `update_autoupdate_run` / `update_apply`）。
+
+```sh
+# 进程模式（推荐）：宿主启动时拉起独立子进程并传入自身 PID
+update autoupdate --config config.json --watch-pid $PPID \
+  --interval 86400 \
+  --on-update 'tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh' &
 ```
 
-要点：
-- **下载不阻塞启动**：check 快速返回（一次 HTTP），download 可异步做。
-- **安装由宿主负责**：`update` 只保证文件完整下载（sha256 校验 + 原子写盘），替换、备份、重启流程由宿主实现（v1 范围，见 `docs/design.md`）。
-- **并发安全**：同一时刻只跑一个 `update` 实例；下载到临时目录可避免与正在运行的应用文件冲突。
+- `--watch-pid PID`：监测宿主进程；宿主退出且已有就绪更新时执行 `--on-update`（支持 `{file}` `{version}` 占位符）。
+- `--interval N`：检查间隔秒数，默认 86400（1 天）。
+- `--once`：仅检查并下载一次即退出，适合「启动时检查一次」场景。
+- 无 `--watch-pid` 时仅定期下载到 `--out` 备用，不自动应用。
+- 空闲时线程挂起，CPU 占用为 0；宿主退出后最多 2 秒内响应。
+- C/C++ 宿主可用 `update_autoupdate_run` 在自有线程内运行同一循环，`update_apply` 在退出钩子中显式应用已下载更新。
 
 ## 7. 常见问题
 

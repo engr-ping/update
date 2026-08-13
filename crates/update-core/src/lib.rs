@@ -12,6 +12,7 @@
 //   - versioninfo:     构建期版本注入（原 internal/versioninfo）
 //
 // 宿主 ⇄ CLI 契约不变：参数入 + stdout 协议 JSON + stderr 日志 + 退出码分类。
+pub mod autoupdate;
 pub mod cli;
 pub mod config;
 pub mod custom;

@@ -195,6 +195,73 @@ if result["update_available"]:
 
 C/C++、Go、Shell 示例与启动时检查推荐流程见集成指南。
 
+### 后台自动更新（autoupdate）
+
+`update autoupdate` 子命令实现「宿主启动后自动检查、有更新自动下载、宿主退出后自动应用、不退出则每天检查一次、空闲时挂起（0 CPU）、独立运行不影响宿主主逻辑」。
+
+```sh
+update autoupdate \
+  --config config.json \
+  --watch-pid $PPID \            # 监测宿主进程（宿主退出时触发更新）
+  --interval 86400 \             # 检查间隔秒数，默认 1 天
+  --out ./_downloads \           # 下载目录，默认系统临时目录
+  --on-update 'mv {file} /opt/myapp && /opt/myapp'   # 宿主退出后执行的命令，{file}/{version} 占位
+```
+
+行为契约：
+
+- **立即检查一次**；有更新则下载到 `--out`（带 sha256 校验、原子写盘）。
+- 之后每 `--interval`（默认 86400 秒 = 1 天）检查一次。
+- `--watch-pid PID`：持续监测该进程；当它退出**且已有就绪更新**时，执行 `--on-update` 钩子（解压/替换/重启由宿主脚本完成，库保持平台无关、零副作用），随后退出。
+- 未给 `--watch-pid`：仅定期下载到 `--out` 备用，不自动应用（由宿主自行处理）。
+- `--once`：仅检查并下载一次即退出（不进入循环），适合「启动时检查一次」场景。
+- 空闲时线程 `sleep`，**CPU 占用为 0**；宿主退出后最多 2 秒内响应。
+
+#### 进程模式（推荐，最干净）
+
+宿主启动时把 `update autoupdate` 作为**独立子进程**拉起（传自身 PID 给 `--watch-pid`），自己照常运行。autoupdate 与宿主完全解耦：宿主崩溃、卡顿都不影响更新检查；宿主退出后 autoupdate 自动执行更新钩子。
+
+```sh
+# 宿主启动脚本（Shell）
+update autoupdate --config config.json --watch-pid $$ \
+  --on-update 'tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh' &
+# 宿主继续运行…
+```
+
+```python
+# 宿主（Python）启动时
+import subprocess, os
+subprocess.Popen(["update", "autoupdate",
+                  "--config", "config.json",
+                  "--watch-pid", str(os.getpid()),
+                  "--on-update", "tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh"])
+```
+
+```go
+// 宿主（Go）启动时
+cmd := exec.Command("update", "autoupdate",
+    "--config", "config.json",
+    "--watch-pid", strconv.Itoa(os.Getpid()),
+    "--on-update", "tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh")
+cmd.Start() // 独立进程，不阻塞宿主
+```
+
+#### 线程模式（C ABI，宿主进程内）
+
+宿主在自己起的线程里调用 `update_autoupdate_run`，阻塞式运行自动更新循环（职责同进程模式）。宿主退出前应调用 `update_apply` 显式应用已下载的更新（线程随进程退出，无法自行 watch 宿主）。
+
+```c
+#include "libupdate.h"
+// 宿主线程里：
+update_autoupdate_run("config.json", 86400, NULL, (unsigned)getpid(),
+                      "tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh");
+// 宿主退出钩子里（已下载更新时）：
+update_apply("tar -xzf {file} -C /opt/myapp && /opt/myapp/restart.sh", file, version);
+```
+
+> 两种模式可并存：进程模式适合「关软后自动替换」；线程/C ABI 模式适合「宿主常驻、进程内管理更新」。所有下载均经 sha256 校验与原子写盘，钩子只负责解压与替换，安全性由宿主脚本控制。
+
+
 ## 测试
 
 所有测试基于 update-core 内置的 TestServer（真实 HTTP 监听）模拟源，不需要真实网络：

@@ -50,6 +50,12 @@ fn ok(s: String) -> *mut c_char {
     to_c(s)
 }
 
+/// 记录失败消息并返回退出码（供返回 i32 的函数使用）。
+fn fail_code(msg: String) -> i32 {
+    *LAST_ERROR.lock().unwrap() = msg;
+    update::cli::EXIT_USAGE
+}
+
 /// 检查是否有新版本。
 ///
 /// \param config_path       配置文件路径（必填）
@@ -157,6 +163,81 @@ pub extern "C" fn update_list(config_path: *const c_char, limit: i32) -> *mut c_
 #[no_mangle]
 pub extern "C" fn update_version() -> *mut c_char {
     to_c(versioninfo::VERSION.to_string())
+}
+
+/// 后台自动更新（阻塞式循环，宿主应在自己起的线程里调用）。
+///
+/// 行为：
+///   - 立即检查一次，有更新则下载到 out_dir；
+///   - 之后每 interval_secs（默认 86400）检查一次；
+///   - 若 watch_pid > 0，持续监测该进程，宿主退出且有就绪更新时执行 on_update；
+///   - 若 once != 0，仅检查+下载一次即返回。
+///
+/// \param config_path   配置文件路径（必填）
+/// \param interval_secs 检查间隔秒数（<=0 视为默认 1 天）
+/// \param out_dir       下载目录（可空，默认系统临时目录）
+/// \param watch_pid     宿主 PID（0 表示不监测）
+/// \param on_update     宿主退出后执行的 shell 模板（可空，支持 {file}/{version}）
+/// \return 退出码（0 成功）。
+#[no_mangle]
+pub extern "C" fn update_autoupdate_run(
+    config_path: *const c_char,
+    interval_secs: u64,
+    out_dir: *const c_char,
+    watch_pid: u32,
+    on_update: *const c_char,
+) -> i32 {
+    let Some(cfg) = cstr(config_path) else {
+        return fail_code("update_autoupdate_run: config_path is null or invalid UTF-8".into());
+    };
+    let opts = update::autoupdate::AutoOptions {
+        config_path: cfg,
+        interval_secs,
+        out_dir: cstr(out_dir).unwrap_or_else(update::autoupdate::default_out_dir),
+        watch_pid: if watch_pid == 0 {
+            None
+        } else {
+            Some(watch_pid)
+        },
+        on_update: cstr(on_update),
+        once: false,
+        current_version: None,
+        platform: None,
+        username: None,
+        password: None,
+    };
+    let mut stderr_buf: Vec<u8> = Vec::new();
+    let code = update::autoupdate::run_autoupdate(&opts, &mut stderr_buf);
+    if code == update::cli::EXIT_OK {
+        *LAST_ERROR.lock().unwrap() = String::new();
+    } else {
+        *LAST_ERROR.lock().unwrap() = String::from_utf8_lossy(&stderr_buf).into_owned();
+    }
+    code
+}
+
+/// 宿主在退出钩子里显式应用已下载的更新。
+///
+/// \param template  shell 模板（支持 {file}/{version}）
+/// \param file      已下载文件路径
+/// \param version   版本号
+/// \return 成功：空串；失败：错误消息。
+#[no_mangle]
+pub extern "C" fn update_apply(
+    template: *const c_char,
+    file: *const c_char,
+    version: *const c_char,
+) -> *mut c_char {
+    let (Some(t), Some(f), Some(v)) = (cstr(template), cstr(file), cstr(version)) else {
+        return fail("update_apply: template/file/version must be non-null UTF-8".into());
+    };
+    let mut stderr_buf: Vec<u8> = Vec::new();
+    let applied = update::autoupdate::apply_update(&t, &f, &v, &mut stderr_buf);
+    if applied {
+        ok(String::new())
+    } else {
+        fail(String::from_utf8_lossy(&stderr_buf).into_owned())
+    }
 }
 
 /// 返回最近一次失败的错误消息字符串；"" 表示无错误。成功调用时清空。

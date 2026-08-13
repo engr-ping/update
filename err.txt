@@ -1,0 +1,1 @@
+update: downloaded v2.0.0 -> /tmp/opencode/smoke/autodl/app-linux-amd64.tar.gz

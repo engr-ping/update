@@ -54,6 +54,24 @@ extern char *update_list(const char *config_path, int limit);
 /* 返回 update 库自身版本号（纯文本）。 */
 extern char *update_version(void);
 
+/* 后台自动更新（阻塞式循环）。宿主应在自己起的线程里调用。
+ * config_path:    配置文件路径（必填）。
+ * interval_secs:  两次检查间隔秒数（<=0 视为默认 1 天）。
+ * out_dir:        下载目录，可 NULL（默认系统临时目录）。
+ * watch_pid:      宿主 PID（0 表示不监测）；非 0 时宿主退出且有就绪更新则执行 on_update。
+ * on_update:      宿主退出后执行的 shell 模板，可 NULL，支持 {file}/{version} 占位符。
+ * 返回退出码：0 成功。 */
+extern int update_autoupdate_run(const char *config_path, unsigned long long interval_secs,
+                                 const char *out_dir, unsigned int watch_pid,
+                                 const char *on_update);
+
+/* 宿主在退出钩子里显式应用已下载的更新。
+ * template: shell 模板（支持 {file}/{version}）。
+ * file:     已下载文件路径。
+ * version:  版本号。
+ * 成功返回空串；失败返回错误消息并设置 last_error。 */
+extern char *update_apply(const char *template, const char *file, const char *version);
+
 /* 返回最近一次失败的错误消息；返回 "" 表示无错误。成功调用时清空。 */
 extern char *update_last_error(void);
 
